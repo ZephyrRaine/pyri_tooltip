@@ -5,7 +5,7 @@ use bevy_ecs::{
 };
 use bevy_math::{Rect, Vec2};
 use bevy_render::camera::Camera;
-use bevy_sprite::Anchor;
+use bevy_sprite::{Anchor, Sprite};
 use bevy_transform::{
     components::{GlobalTransform, Transform},
     systems::{mark_dirty_trees, propagate_parent_transforms, sync_simple_transforms},
@@ -115,14 +115,14 @@ fn place_tooltip(
     mut commands: Commands,
     ctx: Res<TooltipContext>,
     primary: Res<TooltipSettings>,
-    target_query: Query<(&GlobalTransform, &ComputedNode)>,
+    target_query: Query<(&GlobalTransform, Option<&ComputedNode>, Option<&Sprite>)>,
     target_camera_query: Query<&UiTargetCamera>,
     default_ui_camera: DefaultUiCamera,
     camera_query: Query<&Camera>,
     mut tooltip_query: Query<(&mut Node, &mut Transform, &GlobalTransform, &ComputedNode)>,
 ) {
     rq!(matches!(ctx.state, TooltipState::Active));
-    let (target_gt, target_computed) = rq!(target_query.get(ctx.target));
+    let (target_gt, target_computed, target_sprite) = rq!(target_query.get(ctx.target));
     let entity = match &ctx.tooltip.content {
         TooltipContent::Primary(_) => primary.container,
         &TooltipContent::Custom(id) => id,
@@ -146,8 +146,26 @@ fn place_tooltip(
 
     // Calculate target position.
     let mut pos = if let Some(target_anchor) = placement.target_anchor {
-        let target_rect =
-            Rect::from_center_size(target_gt.translation().truncate(), target_computed.size());
+        // Calculate target rect based on whether it's a UI element or sprite
+        let target_rect = if let Some(computed_node) = target_computed {
+            // UI element with ComputedNode
+            Rect::from_center_size(target_gt.translation().truncate(), computed_node.size())
+        } else if let Some(sprite) = target_sprite {
+            // Sprite - convert world position to screen position
+            let world_pos = target_gt.translation();
+            let screen_pos = match camera.world_to_viewport(target_gt, world_pos) {
+                Ok(pos) => pos,
+                Err(_) => ctx.cursor_pos, // Fallback to cursor position if conversion fails
+            };
+
+            // Calculate sprite size and bounds
+            let sprite_size = sprite.custom_size.unwrap_or(Vec2::new(1.0, 1.0));
+            Rect::from_center_size(screen_pos, sprite_size)
+        } else {
+            // Fallback: assume it's a point at the cursor
+            Rect::from_center_size(ctx.cursor_pos, Vec2::ZERO)
+        };
+
         target_rect.center() - target_rect.size() * target_anchor.as_vec() * Vec2::new(-1.0, 1.0)
     } else {
         ctx.cursor_pos

@@ -84,9 +84,7 @@ use bevy_render::view::Visibility;
 use bevy_sprite::Anchor;
 use bevy_text::JustifyText;
 use bevy_transform::TransformSystem;
-use bevy_ui::{
-    BackgroundColor, GlobalZIndex, Interaction, Node, PositionType, UiRect, UiSystem, Val,
-};
+use bevy_ui::{BackgroundColor, GlobalZIndex, Node, PositionType, UiRect, UiSystem, Val};
 
 pub use placement::TooltipPlacement;
 pub use rich_text::{RichText, RichTextSystems, TextSection, TextStyle};
@@ -239,7 +237,6 @@ fn tooltips_enabled(
 // TODO: Animation, wedge (like a speech bubble), easier content customization / icons.
 /// A [`Component`] that specifies a tooltip to be displayed on hover.
 #[derive(Component, Clone, Debug)]
-#[require(Node, Interaction)]
 #[cfg_attr(
     feature = "bevy_reflect",
     derive(bevy_reflect::Reflect),

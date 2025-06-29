@@ -1,6 +1,7 @@
 //! A demonstration of tooltip support for both sprites and UI elements.
 
 use bevy::prelude::*;
+use bevy_picking::Pickable;
 use bevy_sprite::Anchor;
 use bevy_transform::components::GlobalTransform;
 use bevy_window::PrimaryWindow;
@@ -27,6 +28,7 @@ fn setup(mut commands: Commands) {
         },
         Transform::from_translation(Vec3::new(-100.0, 0.0, 0.0)),
         Tooltip::cursor("Red Sprite - This tooltip should work!"),
+        Pickable::default(), // Enable picking for sprite tooltips
         DebugSprite {
             original_color: Color::srgb(1.0, 0.0, 0.0),
         },
@@ -40,6 +42,7 @@ fn setup(mut commands: Commands) {
         },
         Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
         Tooltip::fixed(Anchor::TopCenter, "Green Sprite - Fixed tooltip!"),
+        Pickable::default(), // Enable picking for sprite tooltips
         DebugSprite {
             original_color: Color::srgb(0.0, 1.0, 0.0),
         },

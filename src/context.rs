@@ -4,7 +4,7 @@ use bevy_ecs::reflect::ReflectResource;
 use bevy_ecs::{
     entity::Entity,
     event::{Event, EventReader, EventWriter},
-    query::With,
+    query::{With, Without},
     resource::Resource,
     schedule::{IntoScheduleConfigs as _, common_conditions::on_event},
     system::{Query, Res, ResMut},
@@ -17,10 +17,11 @@ use bevy_render::{
 use bevy_time::Time;
 use bevy_ui::{Interaction, UiStack};
 use bevy_window::{PrimaryWindow, Window, WindowRef};
-// Add these imports for sprite support:
+// Add these imports for sprite support and picking:
 use crate::{Tooltip, TooltipContent, TooltipSettings, TooltipSystems, rich_text::RichText};
+use bevy_picking::events::{Out, Over, Pointer};
 use bevy_sprite::Sprite;
-use bevy_transform::components::{GlobalTransform, Transform};
+use bevy_transform::components::Transform;
 use tiny_bail::prelude::*;
 
 pub(super) fn plugin(app: &mut App) {
@@ -73,48 +74,6 @@ impl Default for TooltipContext {
     }
 }
 
-// Helper function to get window from camera target
-fn get_window_from_camera<'a>(
-    camera: &Camera,
-    primary_window_query: &Query<Entity, With<PrimaryWindow>>,
-    window_query: &'a Query<&Window>,
-) -> Option<&'a Window> {
-    match camera.target {
-        RenderTarget::Window(WindowRef::Primary) => {
-            let window_entity = primary_window_query.single().ok()?;
-            window_query.get(window_entity).ok()
-        }
-        RenderTarget::Window(WindowRef::Entity(window_entity)) => {
-            window_query.get(window_entity).ok()
-        }
-        _ => None,
-    }
-}
-
-// Helper function to get current cursor position from camera
-fn get_current_cursor_pos(
-    camera: &Camera,
-    primary_window_query: &Query<Entity, With<PrimaryWindow>>,
-    window_query: &Query<&Window>,
-) -> Vec2 {
-    match camera.target {
-        RenderTarget::Window(WindowRef::Primary) => {
-            if let Ok(window_entity) = primary_window_query.single() {
-                if let Ok(window) = window_query.get(window_entity) {
-                    return window.cursor_position().unwrap_or_default();
-                }
-            }
-        }
-        RenderTarget::Window(WindowRef::Entity(window_entity)) => {
-            if let Ok(window) = window_query.get(window_entity) {
-                return window.cursor_position().unwrap_or_default();
-            }
-        }
-        _ => {}
-    }
-    Vec2::default()
-}
-
 // Helper function to determine tooltip state transition
 fn should_activate_immediately(
     tooltip: &Tooltip,
@@ -147,41 +106,6 @@ fn apply_tooltip_transition(
     ctx.tooltip.dismissal.on_distance *= ctx.tooltip.dismissal.on_distance;
 }
 
-fn sprite_contains_point(
-    sprite: &Sprite,
-    sprite_transform: &GlobalTransform,
-    point: Vec2,
-    window: &Window,
-    camera_transform: &Transform,
-) -> bool {
-    // Manual world to screen conversion
-    let world_pos = sprite_transform.translation();
-    let center = camera_transform.translation.truncate();
-    let half_width = (window.width() / 2.0) * camera_transform.scale.x;
-    let half_height = (window.height() / 2.0) * camera_transform.scale.y;
-    let left = center.x - half_width;
-    let bottom = center.y - half_height;
-
-    let screen_pos = Vec2::new(
-        (world_pos.x - left) / camera_transform.scale.x,
-        window.height() - ((world_pos.y - bottom) / camera_transform.scale.y),
-    );
-
-    // Calculate sprite size (use a reasonable default if not specified)
-    let sprite_size = sprite.custom_size.unwrap_or(Vec2::new(32.0, 32.0));
-    let half_size = sprite_size * 0.5;
-
-    // For now, let's ignore the anchor and treat all sprites as center-anchored
-    // This will help us debug if the basic coordinate conversion works
-    let sprite_center = screen_pos;
-
-    // Calculate bounds around the center
-    let min = sprite_center - half_size;
-    let max = sprite_center + half_size;
-
-    point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y
-}
-
 fn update_tooltip_context(
     mut ctx: ResMut<TooltipContext>,
     mut hide_tooltip: EventWriter<HideTooltip>,
@@ -193,7 +117,10 @@ fn update_tooltip_context(
     window_query: Query<&Window>,
     camera_query: Query<(&Camera, &Transform)>,
     interaction_query: Query<(&Tooltip, &Interaction)>,
-    sprite_query: Query<(Entity, &Tooltip, &Sprite, &GlobalTransform)>,
+    // Use picking events for sprite tooltips instead of manual detection
+    mut picking_over_events: EventReader<Pointer<Over>>,
+    mut picking_out_events: EventReader<Pointer<Out>>,
+    sprite_tooltip_query: Query<&Tooltip, (With<Sprite>, Without<Interaction>)>,
 ) {
     let old_active = matches!(ctx.state, TooltipState::Active);
     let old_target = ctx.target;
@@ -278,53 +205,41 @@ fn update_tooltip_context(
         break;
     }
 
-    // If no UI tooltip found, check sprites
+    // If no UI tooltip found, check for sprite picking events
     if !found_target {
-        // Find camera for coordinate conversion - try to find any suitable camera
-        let camera = camera_query
-            .iter()
-            .find(|camera| {
-                // Try to find a camera that targets the primary window or any window
-                matches!(camera.0.target, RenderTarget::Window(_))
-            })
-            .or_else(|| {
-                // Fallback: use the first camera available
-                camera_query.iter().next()
-            });
+        // First, check if we're currently hovering a sprite and should maintain that state
+        if !matches!(ctx.state, TooltipState::Inactive) {
+            if let Ok(tooltip) = sprite_tooltip_query.get(ctx.target) {
+                // We're still hovering a sprite with a tooltip - maintain the state
+                ctx.tooltip = tooltip.clone();
+                ctx.tooltip.dismissal.on_distance *= ctx.tooltip.dismissal.on_distance;
+                found_target = true;
+            }
+        }
 
-        if let Some(camera) = camera {
-            // Get the current cursor position for sprite detection
-            let current_cursor_pos =
-                get_current_cursor_pos(camera.0, &primary_window_query, &window_query);
-
-            // Check all sprites with tooltips for hover
-            for (entity, tooltip, sprite, transform) in sprite_query.iter() {
-                // Get the window for coordinate conversion
-                let Some(window) =
-                    get_window_from_camera(camera.0, &primary_window_query, &window_query)
-                else {
-                    continue;
-                };
-
-                // Skip sprites that aren't hovered (equivalent to `Interaction::None => continue`)
-                // Use current cursor position, not cached one!
-                if !sprite_contains_point(sprite, transform, current_cursor_pos, window, camera.1) {
-                    continue;
-                }
-
-                // Still hovering the same target entity.
+        // Handle sprite out events to stop hovering
+        for out_event in picking_out_events.read() {
+            let entity = out_event.target;
+            if sprite_tooltip_query.get(entity).is_ok() {
+                // If we were hovering this entity and now we're not, clear the target
                 if ctx.target == entity && !matches!(ctx.state, TooltipState::Inactive) {
-                    ctx.tooltip = tooltip.clone();
-                    ctx.tooltip.dismissal.on_distance *= ctx.tooltip.dismissal.on_distance;
+                    found_target = false; // Force transition to inactive
+                    break;
+                }
+            }
+        }
+
+        // Handle sprite hover events from picking system (only if we're not already hovering something)
+        if !found_target {
+            for over_event in picking_over_events.read() {
+                let entity = over_event.target;
+                if let Ok(tooltip) = sprite_tooltip_query.get(entity) {
+                    // Switch to the new target entity.
+                    let activate_immediately = should_activate_immediately(tooltip, &ctx, entity);
+                    apply_tooltip_transition(&mut ctx, entity, tooltip, activate_immediately);
                     found_target = true;
                     break;
                 }
-
-                // Switch to the new target entity.
-                let activate_immediately = should_activate_immediately(tooltip, &ctx, entity);
-                apply_tooltip_transition(&mut ctx, entity, tooltip, activate_immediately);
-                found_target = true;
-                break;
             }
         }
     }

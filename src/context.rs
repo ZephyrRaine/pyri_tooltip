@@ -4,7 +4,7 @@ use bevy_ecs::reflect::ReflectResource;
 use bevy_ecs::{
     entity::Entity,
     event::{Event, EventReader, EventWriter},
-    query::{With, Without},
+    query::With,
     resource::Resource,
     schedule::{IntoScheduleConfigs as _, common_conditions::on_event},
     system::{Query, Res, ResMut},
@@ -15,12 +15,12 @@ use bevy_render::{
     view::Visibility,
 };
 use bevy_time::Time;
-use bevy_ui::{Interaction, UiStack};
+// UI picking is now handled through the unified picking system
 use bevy_window::{PrimaryWindow, Window, WindowRef};
 // Add these imports for sprite support and picking:
 use crate::{Tooltip, TooltipContent, TooltipSettings, TooltipSystems, rich_text::RichText};
 use bevy_picking::events::{Out, Over, Pointer};
-use bevy_sprite::Sprite;
+// Sprite import no longer needed - unified picking handles all entity types
 use bevy_transform::components::Transform;
 use tiny_bail::prelude::*;
 
@@ -112,15 +112,13 @@ fn update_tooltip_context(
     mut show_tooltip: EventWriter<ShowTooltip>,
     primary: Res<TooltipSettings>,
     time: Res<Time>,
-    ui_stack: Res<UiStack>,
     primary_window_query: Query<Entity, With<PrimaryWindow>>,
     window_query: Query<&Window>,
     camera_query: Query<(&Camera, &Transform)>,
-    interaction_query: Query<(&Tooltip, &Interaction)>,
-    // Use picking events for sprite tooltips instead of manual detection
+    // Use unified picking events for both UI and sprite tooltips
     mut picking_over_events: EventReader<Pointer<Over>>,
     mut picking_out_events: EventReader<Pointer<Out>>,
-    sprite_tooltip_query: Query<&Tooltip, (With<Sprite>, Without<Interaction>)>,
+    tooltip_query: Query<&Tooltip>,
 ) {
     let old_active = matches!(ctx.state, TooltipState::Active);
     let old_target = ctx.target;
@@ -174,72 +172,41 @@ fn update_tooltip_context(
         }
     }
 
-    // Find the highest entity in the `UiStack` that has a tooltip and is being interacted with.
+    // Use unified picking events for both UI and sprite tooltips
     let mut found_target = false;
-    for &entity in ui_stack.uinodes.iter().rev() {
-        let (tooltip, interaction) = cq!(interaction_query.get(entity));
-        match interaction {
-            Interaction::Pressed if tooltip.dismissal.on_click => {
-                ctx.target = entity;
-                ctx.state = TooltipState::Dismissed;
-                ctx.tooltip.transfer = tooltip.transfer;
-                found_target = true;
-                break;
-            }
-            Interaction::None => continue,
-            _ => (),
-        };
 
-        // Still hovering the same target entity.
-        if ctx.target == entity && !matches!(ctx.state, TooltipState::Inactive) {
+    // First, check if we're currently hovering something and should maintain that state
+    if !matches!(ctx.state, TooltipState::Inactive) {
+        if let Ok(tooltip) = tooltip_query.get(ctx.target) {
+            // We're still hovering an entity with a tooltip - maintain the state
             ctx.tooltip = tooltip.clone();
             ctx.tooltip.dismissal.on_distance *= ctx.tooltip.dismissal.on_distance;
             found_target = true;
-            break;
         }
-
-        // Switch to the new target entity.
-        let activate_immediately = should_activate_immediately(tooltip, &ctx, entity);
-        apply_tooltip_transition(&mut ctx, entity, tooltip, activate_immediately);
-        found_target = true;
-        break;
     }
 
-    // If no UI tooltip found, check for sprite picking events
+    // Handle out events to stop hovering
+    for out_event in picking_out_events.read() {
+        let entity = out_event.target;
+        if tooltip_query.get(entity).is_ok() {
+            // If we were hovering this entity and now we're not, clear the target
+            if ctx.target == entity && !matches!(ctx.state, TooltipState::Inactive) {
+                found_target = false; // Force transition to inactive
+                break;
+            }
+        }
+    }
+
+    // Handle over events from picking system (only if we're not already hovering something)
     if !found_target {
-        // First, check if we're currently hovering a sprite and should maintain that state
-        if !matches!(ctx.state, TooltipState::Inactive) {
-            if let Ok(tooltip) = sprite_tooltip_query.get(ctx.target) {
-                // We're still hovering a sprite with a tooltip - maintain the state
-                ctx.tooltip = tooltip.clone();
-                ctx.tooltip.dismissal.on_distance *= ctx.tooltip.dismissal.on_distance;
+        for over_event in picking_over_events.read() {
+            let entity = over_event.target;
+            if let Ok(tooltip) = tooltip_query.get(entity) {
+                // Switch to the new target entity.
+                let activate_immediately = should_activate_immediately(tooltip, &ctx, entity);
+                apply_tooltip_transition(&mut ctx, entity, tooltip, activate_immediately);
                 found_target = true;
-            }
-        }
-
-        // Handle sprite out events to stop hovering
-        for out_event in picking_out_events.read() {
-            let entity = out_event.target;
-            if sprite_tooltip_query.get(entity).is_ok() {
-                // If we were hovering this entity and now we're not, clear the target
-                if ctx.target == entity && !matches!(ctx.state, TooltipState::Inactive) {
-                    found_target = false; // Force transition to inactive
-                    break;
-                }
-            }
-        }
-
-        // Handle sprite hover events from picking system (only if we're not already hovering something)
-        if !found_target {
-            for over_event in picking_over_events.read() {
-                let entity = over_event.target;
-                if let Ok(tooltip) = sprite_tooltip_query.get(entity) {
-                    // Switch to the new target entity.
-                    let activate_immediately = should_activate_immediately(tooltip, &ctx, entity);
-                    apply_tooltip_transition(&mut ctx, entity, tooltip, activate_immediately);
-                    found_target = true;
-                    break;
-                }
+                break;
             }
         }
     }

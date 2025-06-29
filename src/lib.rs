@@ -80,6 +80,7 @@ use bevy_ecs::{
     system::{Commands, Query, Res},
     world::World,
 };
+use bevy_picking::Pickable;
 use bevy_render::view::Visibility;
 use bevy_sprite::Anchor;
 use bevy_text::JustifyText;
@@ -190,6 +191,8 @@ impl TooltipSettings {
                     BackgroundColor(Color::srgba(0.106, 0.118, 0.122, 0.9)),
                     Visibility::Hidden,
                     GlobalZIndex(999),
+                    // Prevent tooltip from interfering with picking detection
+                    Pickable::IGNORE,
                 ))
                 .id()
         };
@@ -203,6 +206,8 @@ impl TooltipSettings {
                     Node::default(),
                     RichText::default(),
                     ChildOf(container),
+                    // Prevent tooltip text from interfering with picking detection
+                    Pickable::IGNORE,
                 ))
                 .id()
         };
